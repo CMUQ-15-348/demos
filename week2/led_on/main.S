@@ -28,15 +28,13 @@ main:
         ldr r2, =0xfffff
     delay1:
         subs r2, r2, #1
-        cmp r2, #0
-        bhi delay1
+        bne delay1
 
         str r1, [r0, #0x014]
         ldr r2, =0xfffff
     delay2:
         subs r2, r2, #1
-        cmp r2, #0
-        bhi delay2
+        bne delay2
 
         b loop
 
