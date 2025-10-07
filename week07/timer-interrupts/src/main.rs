@@ -1,0 +1,176 @@
+#![no_std]
+#![no_main]
+
+// Declare that there is a lib348 library inside this project
+pub mod lib348;
+
+// Use some crates provides by others
+use cortex_m;
+use cortex_m_rt::entry;
+use defmt::*;
+use defmt_rtt as _;
+use panic_probe as _;
+
+// Use our own lib348 library components that are inside this project
+use crate::lib348::control_registers::*;
+use crate::lib348::sys_clock;
+
+const LED_PIN: u32 = 25;
+
+/* The stage 2 bootloader.
+ * This is taken from https://github.com/rp-rs/rp2040-boot2/blob/main/bin/boot2_w25q080.padded.bin
+ * xxd --include <file.bin> can format the bytes for you.
+ */
+#[link_section = ".boot2"]
+#[no_mangle]
+#[used]
+pub static BOOT2_FIRMWARE: [u8; 256] = [
+    0x00, 0xb5, 0x32, 0x4b, 0x21, 0x20, 0x58, 0x60, 0x98, 0x68, 0x02, 0x21, 0x88, 0x43, 0x98, 0x60,
+    0xd8, 0x60, 0x18, 0x61, 0x58, 0x61, 0x2e, 0x4b, 0x00, 0x21, 0x99, 0x60, 0x02, 0x21, 0x59, 0x61,
+    0x01, 0x21, 0xf0, 0x22, 0x99, 0x50, 0x2b, 0x49, 0x19, 0x60, 0x01, 0x21, 0x99, 0x60, 0x35, 0x20,
+    0x00, 0xf0, 0x44, 0xf8, 0x02, 0x22, 0x90, 0x42, 0x14, 0xd0, 0x06, 0x21, 0x19, 0x66, 0x00, 0xf0,
+    0x34, 0xf8, 0x19, 0x6e, 0x01, 0x21, 0x19, 0x66, 0x00, 0x20, 0x18, 0x66, 0x1a, 0x66, 0x00, 0xf0,
+    0x2c, 0xf8, 0x19, 0x6e, 0x19, 0x6e, 0x19, 0x6e, 0x05, 0x20, 0x00, 0xf0, 0x2f, 0xf8, 0x01, 0x21,
+    0x08, 0x42, 0xf9, 0xd1, 0x00, 0x21, 0x99, 0x60, 0x1b, 0x49, 0x19, 0x60, 0x00, 0x21, 0x59, 0x60,
+    0x1a, 0x49, 0x1b, 0x48, 0x01, 0x60, 0x01, 0x21, 0x99, 0x60, 0xeb, 0x21, 0x19, 0x66, 0xa0, 0x21,
+    0x19, 0x66, 0x00, 0xf0, 0x12, 0xf8, 0x00, 0x21, 0x99, 0x60, 0x16, 0x49, 0x14, 0x48, 0x01, 0x60,
+    0x01, 0x21, 0x99, 0x60, 0x01, 0xbc, 0x00, 0x28, 0x00, 0xd0, 0x00, 0x47, 0x12, 0x48, 0x13, 0x49,
+    0x08, 0x60, 0x03, 0xc8, 0x80, 0xf3, 0x08, 0x88, 0x08, 0x47, 0x03, 0xb5, 0x99, 0x6a, 0x04, 0x20,
+    0x01, 0x42, 0xfb, 0xd0, 0x01, 0x20, 0x01, 0x42, 0xf8, 0xd1, 0x03, 0xbd, 0x02, 0xb5, 0x18, 0x66,
+    0x18, 0x66, 0xff, 0xf7, 0xf2, 0xff, 0x18, 0x6e, 0x18, 0x6e, 0x02, 0xbd, 0x00, 0x00, 0x02, 0x40,
+    0x00, 0x00, 0x00, 0x18, 0x00, 0x00, 0x07, 0x00, 0x00, 0x03, 0x5f, 0x00, 0x21, 0x22, 0x00, 0x00,
+    0xf4, 0x00, 0x00, 0x18, 0x22, 0x20, 0x00, 0xa0, 0x00, 0x01, 0x00, 0x10, 0x08, 0xed, 0x00, 0xe0,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x74, 0xb2, 0x4e, 0x7a,
+];
+
+#[link_section = ".vector_table.interrupts"]
+#[no_mangle]
+pub static __INTERRUPTS: [unsafe extern "C" fn(); 26] = [
+    ALARM0, //0
+    DefHandler, //1
+    DefHandler, //2
+    DefHandler, //3
+    DefHandler, //4
+    DefHandler, //5
+    DefHandler, //6
+    DefHandler, //7
+    DefHandler, //8
+    DefHandler, //9
+    DefHandler, //10
+    DefHandler, //11
+    DefHandler, //12
+    DefHandler, //13
+    DefHandler, //14
+    DefHandler, //15
+    DefHandler, //16
+    DefHandler, //17
+    DefHandler, //18
+    DefHandler, //19
+    DefHandler, //20
+    DefHandler, //21
+    DefHandler, //22
+    DefHandler, //23
+    DefHandler, //24
+    DefHandler, //25
+];
+
+extern "C" {
+    fn DefHandler();
+}
+
+const NVIC_ISER: u32 = 0xe0000000 + 0xe100;
+
+fn io_reset() {
+    // Reset, then deassert the reset on IO_BANK0
+    // See Section 2.14 in the datasheet for details
+    set_bits(RESETS_BASE, 1 << 5); // Write 1 to reset
+    clear_bits(RESETS_BASE, 1 << 5); // Write 0 to deassert reset
+
+    // Reset, then deassert the reset on PADS_BANK0
+    // See Section 2.14 in the datasheet for details
+    set_bits(RESETS_BASE, 1 << 8); // Write 1 to reset
+    clear_bits(RESETS_BASE, 1 << 8); // Write 0 to deassert reset
+}
+
+/*
+ * Code to initialize the pin/pad for a single output pin
+ */
+fn init_output_pin(pin: u32) {
+    // Configure the pads.  Writing 0 disables input and enables output for that
+    // pad. See Table 339 and Table 341 in the datasheet for details
+    write_reg(PADS_BANK0_BASE + (pin + 1) * 4, 0);
+
+    // Configure IO_BANK0: Set GPIO??_CTRL.funcsel = 5, which selects SIO control.
+    // The IO_BANK0 peripheral base address is 0x4001_4000. According to the
+    // datasheet, each GPIO has 8 bytes of registers. For example, the GPIO15
+    // CTRL register is located at:   offset = (15 * 8) + 4 = 124 (0x7C)
+    // See Table 283, Table 285, and Table 279 in the datasheet for details
+    write_reg(IO_BANK0_BASE + (pin * 8 + 4), 5);
+
+    // Configure SIO: Enable output for GPIO??.
+    // The SIO peripheral base address is 0xD000_0000.
+    // The GPIO_OE_SET register is at offset 0x024.
+    // We first need to enable the output driver for GPIO??.
+    // See Table 16 and Table 25 in the datasheet for details
+    write_reg(SIO_BASE + 0x024, 1 << pin);
+}
+
+/*
+ * The actual main function.
+ */
+#[entry]
+fn main() -> ! {
+    // Initialize the clocks and IO pins
+    sys_clock::init_clocks();
+    io_reset();
+    init_output_pin(LED_PIN);
+
+    // Enable Timer0 in INTE
+    write_reg(TIMER_BASE + 0x38, 1 << 0);
+
+    // Clear out any pending ALARM0 interrupts
+    write_reg(TIMER_BASE + 0x34, 1 << 0);
+
+    // Enable ALARM0 interrupt
+    write_reg(NVIC_ISER, 1 << 0);
+
+    // Set an alarm for 10 seconds from now
+    let cur_time = read_reg(TIMER_BASE + 0xc);
+    let alarm_time = cur_time + 2000000;
+    write_reg(TIMER_BASE + 0x10, alarm_time);
+
+    // let mut x = 0;
+    loop {
+        cortex_m::asm::wfi();
+        info!("Loop ran once");
+        // info!("LED on {}", x);
+        // write_reg(SIO_BASE + 0x014, 1 << LED_PIN);
+        // for _ in 0..800000 {
+        //     cortex_m::asm::nop();
+        // }
+
+        // info!("LED off");
+        // write_reg(SIO_BASE + 0x018, 1 << LED_PIN);
+        // for _ in 0..800000 {
+        //     cortex_m::asm::nop();
+        // }
+
+        // x += 1;
+    }
+}
+
+#[allow(non_snake_case)]
+#[no_mangle]
+pub extern "C" fn ALARM0() {
+    if read_reg(TIMER_BASE + 0x34) & 0x1 == 0x1 {
+        info!("Got an alarm");
+
+        //let cur_time = read_reg(TIMER_BASE + 0xc);
+        //let alarm_time = cur_time + 2000000;
+        let alarm_time = read_reg(TIMER_BASE + 0x10) + 2000000;
+        write_reg(TIMER_BASE + 0x10, alarm_time);
+        
+        // Acknowledge the interrupt
+        write_reg(TIMER_BASE + 0x34, 1 << 0);
+    }
+}
