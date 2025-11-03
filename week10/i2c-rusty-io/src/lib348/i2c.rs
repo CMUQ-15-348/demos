@@ -44,6 +44,9 @@ impl I2C1 {
         let the_bits = (1 << 0) | (1 << 6) | (1 << 1) | (0 << 4);
         write_reg(I2C1_BASE + IC_CON, the_bits);
 
+        // Setup the control registers related to timing
+        set_cnts(125_000_000, 400_000);
+
         // Enable I2C
         set_bits(I2C1_BASE + IC_ENABLE, 0x0000_0001);
     }
@@ -120,4 +123,28 @@ impl I2C1 {
             bytes[i] = (read_reg(I2C1_BASE + IC_DATA_CMD) & 0xFF) as u8;
         }
     }
+}
+
+/* Calculate the HCNT and LCNT values needed based on the clock rates
+ * sys_clk_freq is probably 125_000_000
+ * baudrate is likely 400_000
+ */
+fn set_cnts(sys_clk_freq: u32, baudrate: u32) {
+    let period = (sys_clk_freq + baudrate / 2) / baudrate;
+    let lcnt = period * 3 / 5;
+    let hcnt = period - lcnt;
+
+    let spklen = if lcnt < 16 { 1 } else { lcnt / 16 };
+
+    let sda_tx_hold_count = if baudrate < 1_000_000 {
+        ((sys_clk_freq * 3) / 10_000_000) + 1
+    } else {
+        ((sys_clk_freq * 3) / 20_000_000) + 1
+    };
+
+    write_reg(I2C1_BASE + IC_FS_SCL_HCNT, hcnt);
+    write_reg(I2C1_BASE + IC_FS_SCL_LCNT, lcnt);
+    write_reg(I2C1_BASE + IC_FS_SPKLEN, spklen);
+    let val = read_reg(I2C1_BASE + IC_SDA_HOLD) & 0xffff0000;
+    write_reg(I2C1_BASE + IC_SDA_HOLD, val | sda_tx_hold_count);
 }
