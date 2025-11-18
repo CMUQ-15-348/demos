@@ -1,0 +1,58 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "preLaunchTask": "rust: cargo build",
+            //"preLaunchTask": "BuildAndRTT",
+            "name": "Cortex Debug CMSIS-DAP",
+            "cwd": "${workspaceRoot}",
+            // "executable": "${command:cmake.launchTargetPath}",
+            "executable": "${workspaceFolder}/target/thumbv6m-none-eabi/debug/embassy_picow",
+            "request": "launch",
+            "type": "cortex-debug",
+            "servertype": "openocd",
+            "toolchainPrefix": "arm-none-eabi",
+            //"gdbPath": "gdb-multiarch",
+            //"gdbPath": "arm-none-eabi-gdb",
+            "device": "RP2040",
+            "configFiles": [
+                "interface/cmsis-dap.cfg",
+                "target/rp2040.cfg"
+            ],
+            "svdFile": "${workspaceRoot}/.vscode/rp2040.svd",
+            "runToEntryPoint": "main",
+            "runToMain": true,
+            "preLaunchCommands": [
+                "monitor init",
+                "monitor reset init",
+                "monitor halt",
+                "monitor arm semihosting enable",
+                "monitor arm semihosting_fileio enable",
+            ],
+            // Work around for stopping at main on restart
+            "postRestartCommands": [
+                "break main",
+                "continue"
+            ],
+            "openOCDLaunchCommands": [
+                "adapter speed 5000",
+            ],
+            "rttConfig": {
+                "enabled": true,
+                "address": "auto",
+                "clearSearch": false,
+                "polling_interval": 20,
+                "rtt_start_retry": 2000,
+                "decoders": [
+                    {
+                        "label": "RTT channel 0",
+                        "port": 0,
+                        //"timestamp": true,
+                        //"type": "console",
+                        "type": "defmt", // This only works with the modified cortex-debug extension
+                    }
+                ]
+            },
+        }
+    ]
+}
